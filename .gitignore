@@ -13,6 +13,13 @@ develop-eggs/
 dist/
 downloads/
 dataset_yolo/
+docs/
+models/
+old_model/
+old_proccessed_info/
+output/
+outputs/
+
 data/
 eggs/
 .eggs/

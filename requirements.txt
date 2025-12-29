@@ -16,3 +16,6 @@ ultralytics>=8.0.140
 filterpy
 lapx
 # bytetrack-python  # Optional: Uncomment if you specifically need the external package
+
+# extra
+pyarrow
