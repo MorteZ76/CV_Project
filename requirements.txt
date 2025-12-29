@@ -1,0 +1,18 @@
+# Core Data & Vision
+numpy
+pandas
+opencv-python
+matplotlib
+tqdm
+scipy
+scikit-learn
+
+# Deep Learning (YOLO & Pytorch)
+torch
+torchvision
+ultralytics>=8.0.140
+
+# Tracking Utilities
+filterpy
+lapx
+# bytetrack-python  # Optional: Uncomment if you specifically need the external package
