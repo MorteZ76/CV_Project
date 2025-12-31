@@ -5,10 +5,11 @@ Analyzes object trajectories to determine their movement patterns across specifi
 regions of the video frame (e.g., Top-Left -> Middle-Center -> Bottom-Right).
 
 Features:
-- Divides the video frame into a 3x3 grid (9 regions).
-- Maps each trajectory point to a specific region.
+- Unified processing for 'NEW', 'OLD', and 'GT' (Ground Truth) data sources.
+- Automatically scales GT annotations to match the video resolution.
+- Maps each trajectory point to a 3x3 grid region.
 - Compresses trajectory data into a sequence of visited regions (path steps).
-- Supports batch processing of multiple models (e.g., NEW vs OLD).
+- Outputs standardized path CSVs for analysis.
 """
 
 import cv2
@@ -31,9 +32,11 @@ except ImportError:
 # CONFIGURATION
 # ==============================================================================
 
-VIDEO_NUM = 0  # Select Video: 0 or 3
+# Videos to process: 0 (video0) and 3 (video3)
+VIDEOS_TO_PROCESS = [0, 3]
+MODELS_TO_PROCESS = ["GT", "NEW", "OLD"]
 
-# Resolve Base Directory (Go back one level from src if script is in src/)
+# Path Resolution
 BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = BASE_DIR / "outputs"
 TRAJ_DIR = OUTPUTS_DIR / "trajectories"
@@ -69,32 +72,24 @@ class PathExtractor:
     and extracting sequential movement paths.
     """
 
-    def __init__(self, video_path: str, traj_csv_path: Path, output_csv_path: Path):
+    def __init__(self, video_path: str):
         """
-        Initialize the PathExtractor.
-
-        Args:
-            video_path (str): Path to the source video file (for dimensions).
-            traj_csv_path (Path): Path to the input trajectories CSV.
-            output_csv_path (Path): Path where the extracted paths CSV will be saved.
+        Initialize the PathExtractor with video dimensions.
         """
         self.video_path = video_path
-        self.traj_csv_path = traj_csv_path
-        self.output_csv_path = output_csv_path
+        self.frame_w, self.frame_h = self._get_video_dimensions()
         
-        # Frame dimensions
-        self.frame_width = 0
-        self.frame_height = 0
-        self.region_w = 0
-        self.region_h = 0
+        # Calculate 3x3 grid dimensions
+        self.region_w = self.frame_w // 3
+        self.region_h = self.frame_h // 3
         
         # Data storage
         # {track_id: [{'region': Region, 'frame': int, 'x': int, 'y': int}, ...]}
         self.track_paths = defaultdict(list)
         self.track_classes = {}  # {track_id: class_name}
 
-    def initialize_dimensions(self) -> None:
-        """Opens the video to retrieve dimensions and calculate grid size."""
+    def _get_video_dimensions(self) -> Tuple[int, int]:
+        """Opens the video to retrieve dimensions."""
         if not os.path.exists(self.video_path):
             raise FileNotFoundError(f"Video file not found: {self.video_path}")
 
@@ -102,26 +97,20 @@ class PathExtractor:
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {self.video_path}")
         
-        ret, frame = cap.read()
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
         
-        if not ret:
-            raise ValueError("Failed to read the first frame from video.")
-        
-        self.frame_height, self.frame_width = frame.shape[:2]
-        
-        # Calculate 3x3 grid dimensions
-        self.region_w = self.frame_width // 3
-        self.region_h = self.frame_height // 3
-        
-        print(f"Video Dimensions: {self.frame_width}x{self.frame_height}")
-        print(f"Region Grid Size: {self.region_w}x{self.region_h}")
+        if w == 0 or h == 0:
+            raise ValueError("Failed to read video dimensions.")
+            
+        return w, h
 
     def get_region_from_coords(self, x: int, y: int) -> Region:
         """Maps an (x, y) coordinate to a specific Region enum."""
-        # Clamp coordinates to frame boundaries to avoid index errors
-        x = max(0, min(x, self.frame_width - 1))
-        y = max(0, min(y, self.frame_height - 1))
+        # Clamp coordinates to frame boundaries
+        x = max(0, min(x, self.frame_w - 1))
+        y = max(0, min(y, self.frame_h - 1))
         
         col = min(2, x // self.region_w)
         row = min(2, y // self.region_h)
@@ -138,18 +127,13 @@ class PathExtractor:
         y2 = y1 + self.region_h
         return x1, y1, x2, y2
 
-    def process(self) -> None:
-        """Reads the trajectory CSV and builds the region path for each track."""
-        if not self.traj_csv_path.exists():
-            print(f"[Warning] Trajectory file not found: {self.traj_csv_path}")
-            return
-
-        print(f"Processing trajectories: {self.traj_csv_path.name}...")
-        df = pd.read_csv(self.traj_csv_path)
-        
+    def process_dataframe(self, df: pd.DataFrame) -> None:
+        """
+        Reads a standardized trajectory DataFrame and builds region paths.
+        Expected columns: ['track_id', 'frame', 'x', 'y', 'class_name']
+        """
         # Sort to ensure we process frames sequentially
-        if "frame" in df.columns and "track_id" in df.columns:
-            df = df.sort_values(['track_id', 'frame'])
+        df = df.sort_values(['track_id', 'frame'])
         
         # Group by track to process individual paths
         grouped = df.groupby('track_id')
@@ -157,13 +141,14 @@ class PathExtractor:
         for track_id, group in grouped:
             prev_region = None
             
-            # Store class name (assuming constant per track)
-            class_name = group['class_name'].iloc[0] if 'class_name' in group.columns else "Unknown"
+            # Store class name (handle potential missing values)
+            cls_val = group.iloc[0]['class_name']
+            class_name = str(cls_val).replace('"', '').strip() if pd.notna(cls_val) else "Unknown"
             self.track_classes[track_id] = class_name
             
             for _, row in group.iterrows():
-                x = int(round(float(row['x'])))
-                y = int(round(float(row['y'])))
+                x = int(row['x'])
+                y = int(row['y'])
                 frame_idx = int(row['frame'])
                 
                 curr_region = self.get_region_from_coords(x, y)
@@ -178,15 +163,13 @@ class PathExtractor:
                     })
                     prev_region = curr_region
 
-    def save(self) -> None:
+    def save(self, output_path: Path) -> None:
         """Saves the extracted paths to the output CSV."""
         if not self.track_paths:
-            print("[Info] No paths extracted to save.")
+            print(f"   [Info] No paths extracted for {output_path.name}")
             return
 
-        print(f"Saving extracted paths to: {self.output_csv_path}")
-        
-        with open(self.output_csv_path, 'w', newline='') as f:
+        with open(output_path, 'w', newline='') as f:
             writer = csv.writer(f)
             # CSV Header
             writer.writerow(['track_id', 'class_name', 'path_step', 'region', 'frame', 'x', 'y'])
@@ -205,13 +188,10 @@ class PathExtractor:
                         point['y']
                     ])
         
-        print(f" -> Saved {len(self.track_paths)} unique paths.")
+        print(f"   -> Saved {len(self.track_paths)} unique paths to {output_path.name}")
 
     def visualize_grid(self) -> None:
-        """
-         displays the first frame of the video overlaid with the region grid.
-         useful for verifying region definitions.
-        """
+        """Displays the first frame of the video overlaid with the region grid."""
         cap = cv2.VideoCapture(self.video_path)
         ret, frame = cap.read()
         cap.release()
@@ -221,38 +201,81 @@ class PathExtractor:
             return
 
         # Draw Grid Lines
-        # Vertical
         for i in range(1, 3):
-            x = i * self.region_w
-            cv2.line(frame, (x, 0), (x, self.frame_height), (255, 255, 255), 2)
-        
-        # Horizontal
-        for i in range(1, 3):
-            y = i * self.region_h
-            cv2.line(frame, (0, y), (self.frame_width, y), (255, 255, 255), 2)
+            # Vertical
+            cv2.line(frame, (i * self.region_w, 0), (i * self.region_w, self.frame_h), (255, 255, 255), 2)
+            # Horizontal
+            cv2.line(frame, (0, i * self.region_h), (self.frame_w, i * self.region_h), (255, 255, 255), 2)
             
         # Draw Labels
-        for region in Region:
-            x1, y1, x2, y2 = self.get_region_bounds(region)
+        for r in Region:
+            x1, y1, x2, y2 = self.get_region_bounds(r)
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             
-            label = get_region_display_name(region)
+            label = get_region_display_name(r)
             (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             
             # Text Background
             cv2.rectangle(frame, (cx - w//2 - 5, cy - h - 5), (cx + w//2 + 5, cy + 5), (0,0,0), -1)
             cv2.putText(frame, label, (cx - w//2, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # Resize for display if too large
+        # Resize for display
         target_h = 800
-        scale = target_h / self.frame_height
-        target_w = int(self.frame_width * scale)
+        scale = target_h / self.frame_h
+        target_w = int(self.frame_w * scale)
         frame_resized = cv2.resize(frame, (target_w, target_h))
 
-        cv2.imshow(f"Region Grid Visualization (Video {VIDEO_NUM})", frame_resized)
-        print("Press any key to close the grid visualization...")
+        cv2.imshow("Region Grid Visualization", frame_resized)
+        print("   [UI] Press any key to close the grid visualization...")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+
+
+# ==============================================================================
+# DATA LOADING HELPERS
+# ==============================================================================
+
+def load_gt_data(video_num: int, video_w: int, video_h: int) -> pd.DataFrame:
+    """
+    Loads Ground Truth annotations and scales them to the video resolution.
+    Returns a normalized DataFrame matching tracker output format.
+    """
+    _, ann_path = utils.get_video_paths(video_num)
+    df = utils.load_annotations(ann_path)
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    # Calculate scaling (Annotation Coords -> Video Pixel Coords)
+    # SDD annotations might be in a different coordinate space
+    max_x = max(df['xmax'].max(), 1.0)
+    max_y = max(df['ymax'].max(), 1.0)
+    
+    scale_x = video_w / max_x
+    scale_y = video_h / max_y
+
+    # Calculate Center Points and Scale
+    df['x'] = ((df['xmin'] + df['xmax']) / 2) * scale_x
+    df['y'] = ((df['ymin'] + df['ymax']) / 2) * scale_y
+    
+    # Standardize Class Name column
+    df = df.rename(columns={'label': 'class_name'})
+    
+    return df[['track_id', 'frame', 'x', 'y', 'class_name']]
+
+
+def load_tracker_data(video_num: int, model: str) -> pd.DataFrame:
+    """
+    Loads trajectory data from a tracker output CSV.
+    """
+    filename = f"video{video_num}_trajectories{model}.csv"
+    path = TRAJ_DIR / filename
+    
+    if not path.exists():
+        print(f"   [Warning] Tracker file missing: {path}")
+        return pd.DataFrame()
+        
+    return pd.read_csv(path)
 
 
 # ==============================================================================
@@ -260,45 +283,48 @@ class PathExtractor:
 # ==============================================================================
 
 def main():
-    # 1. Setup Video Path
-    try:
-        video_path, _ = utils.get_video_paths(VIDEO_NUM)
-        print(f"Target Video: {video_path}")
-    except ValueError as e:
-        print(f"[Error] {e}")
-        return
-
-    # 2. Define Models to Process
-    models = ["NEW", "OLD"]
-
-    for model_type in models:
-        print(f"\n--- Processing {model_type} Model ---")
+    for video_num in VIDEOS_TO_PROCESS:
+        print(f"\n=== Processing Video {video_num} ===")
         
-        # Construct dynamic file paths
-        traj_filename = f"video{VIDEO_NUM}_trajectories{model_type}.csv"
-        traj_path = TRAJ_DIR / traj_filename
-        
-        output_filename = f"video{VIDEO_NUM}_paths{model_type}.csv"
-        output_path = PATHS_DIR / output_filename
-
-        # Initialize Extractor
         try:
-            extractor = PathExtractor(video_path, traj_path, output_path)
-            extractor.initialize_dimensions()
+            # 1. Setup Video and Extractor
+            video_path, _ = utils.get_video_paths(video_num)
+            print(f"   Target Video: {video_path}")
             
-            # Run Extraction
-            extractor.process()
-            extractor.save()
+            extractor = PathExtractor(video_path)
             
-            # Show grid only once (for the first model processed)
-            if model_type == models[0]:
-                print("\nShowing region grid for verification...")
-                extractor.visualize_grid()
-                
-        except Exception as e:
-            print(f"[Error] Failed processing {model_type} model: {e}")
+            # Show grid once per video for verification
+            extractor.visualize_grid()
 
-    print("\nBatch processing complete.")
+            # 2. Process Each Model (GT, NEW, OLD)
+            for model in MODELS_TO_PROCESS:
+                print(f"\n   > Extracting {model} paths...")
+                
+                # Load appropriate data
+                if model == "GT":
+                    df = load_gt_data(video_num, extractor.frame_w, extractor.frame_h)
+                else:
+                    df = load_tracker_data(video_num, model)
+
+                if df.empty:
+                    print(f"     [Skip] No data available for {model}")
+                    continue
+
+                # Run Extraction
+                # Clear previous data to reuse the extractor instance
+                extractor.track_paths.clear()
+                extractor.track_classes.clear()
+                
+                extractor.process_dataframe(df)
+                
+                # Save Result
+                out_filename = f"video{video_num}_paths{model}.csv"
+                extractor.save(PATHS_DIR / out_filename)
+
+        except Exception as e:
+            print(f"[Error] Failed processing Video {video_num}: {e}")
+
+    print("\nBatch path extraction complete.")
 
 if __name__ == "__main__":
     main()
