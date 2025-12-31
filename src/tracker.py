@@ -2,7 +2,14 @@
 tracker.py
 ----------
 Main execution script for the Advanced Object Tracker.
-Handles video loading, main loop execution, visualization, and result saving.
+
+This script orchestrates the full tracking pipeline:
+1. Loads video footage and ground truth annotations.
+2. Loads pre-computed object detections (cached in parquet format).
+3. Runs a ByteTrack-like tracking algorithm to associate detections across frames.
+4. Visualizes both Ground Truth and Tracking results in real-time.
+5. Handles interactive playback controls (pause, seek, frame-step).
+6. Exports trajectory data and computes performance metrics (HOTA, MSE).
 """
 
 import os
@@ -13,44 +20,49 @@ import numpy as np
 import pandas as pd
 from collections import deque, defaultdict
 from pathlib import Path
-import utils  # Local project utils
-import tracker_utils as tu  # Tracker specific utils
+import utils  # Local project general utilities
+import tracker_utils as tu  # Tracker-specific logic (NMS, metrics, visualization)
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
 
 # --- Paths ---
-video_num = 0  # 0 or 3 to switch videos
+# Select video source (0 or 3) to toggle between different dataset scenes
+video_num = 0 
 VIDEO_PATH, ANNOT_PATH = utils.get_video_paths(video_num)
 
 # Resolve Base Directory (Go back one level from src if script is in src/)
+# Ensures paths work regardless of where the script is executed from
 BASE_DIR = Path(__file__).parent.parent if "__file__" in locals() else Path.cwd().parent
 OUTPUTS_DIR = BASE_DIR / "outputs"
 
-# Relative Detection Path
+# Path to the cached detections file (Parquet format for speed)
 DET_PATH = str(OUTPUTS_DIR / "detections_cache" / f"new_model_video{video_num}_detections.parquet")
 
 # --- Evaluation & Output Directories ---
+# Ensure output directories exist for trajectories and metrics
 TRAJ_DIR = OUTPUTS_DIR / "trajectories"
 HOTA_DIR = OUTPUTS_DIR / "hota"
 utils.ensure_dir(str(TRAJ_DIR))
 utils.ensure_dir(str(HOTA_DIR))
 
+# Output file paths
 TRAJ_CSV = str(TRAJ_DIR / f"video{video_num}_trajectoriesNEW.csv")
 HOTA_CSV = str(HOTA_DIR / f"video{video_num}_hota_breakdownNEW.csv")
 
-# --- Visual Settings ---
-COMPUTE_MSE = True
-HOTA_TAUS = [i / 20 for i in range(1, 20)]  # 0.05 to 0.95
-SKIP_GT_OCCLUDED = True
-PAUSE_ON_START = False
+# --- Visual & Logic Settings ---
+COMPUTE_MSE = True  # Enable real-time Mean Squared Error calculation
+HOTA_TAUS = [i / 20 for i in range(1, 20)]  # HOTA thresholds: 0.05 to 0.95
+SKIP_GT_OCCLUDED = True  # If True, do not visualize or evaluate against occluded GT objects
+PAUSE_ON_START = False   # Start playback in paused mode
 
-# Class Definitions (Dynamic from utils)
+# --- Class Definitions ---
+# Dynamically load class mappings from the shared utils module
 CLASS_NAMES = {v: k for k, v in utils.CLASS_MAP.items()}
 LABEL_TO_ID = {v: k for k, v in CLASS_NAMES.items()}
 CLASS_COLORS = {v: utils.CLASS_COLORS[k] for k, v in utils.CLASS_MAP.items()}
-LOST_COLOR = (0, 165, 255)
+LOST_COLOR = (0, 165, 255)  # Orange color for lost/coasted tracks
 
 
 # ==============================================================================
@@ -58,46 +70,59 @@ LOST_COLOR = (0, 165, 255)
 # ==============================================================================
 
 def main():
+    """
+    Main function to run the object tracker.
+    Initializes resources, runs the frame-by-frame loop, and saves results.
+    """
+    # Initialize Video Capture
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
         print(f"Cannot open video: {VIDEO_PATH}")
         return
 
+    # Video Metadata
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # --- Load Ground Truth ---
+    # Parse annotations and calculate scaling factors if video resolution differs from annotations
     frames_gt, (W_ref, H_ref) = tu.parse_sdd_annotations(ANNOT_PATH)
     scale_x = W / float(W_ref if W_ref > 0 else W)
     scale_y = H / float(H_ref if H_ref > 0 else H)
+    
+    # Structure GT data for efficient per-frame lookup and HOTA evaluation
     gt_by_frame = tu.build_gt_by_frame(frames_gt, scale_x, scale_y, SKIP_GT_OCCLUDED)
     pred_by_frame = defaultdict(list)
 
     # --- Load Detections ---
+    # Load pre-processed detections from disk to avoid running inference during tracking
     dets_by_frame = tu.load_cached_detections(DET_PATH)
 
     # --- Initialize Tracker ---
+    # Instantiate the ByteTrack-like tracker with configured IOU thresholds
     tracker = tu.ByteTrackLike(iou_gate=tu.IOU_GATE, min_hits=tu.MIN_HITS)
 
-    # State Containers
-    track_paths = {}         # stores high-conf centers
-    track_last_seen = {}     # last frame a high-conf point was added
-    track_cls = {}
-    gt_paths = defaultdict(deque)
+    # State Containers for Visualization & Metrics
+    track_paths = {}         # History of (x, y) centroids for active tracks
+    track_last_seen = {}     # Frame index when a track was last successfully matched
+    track_cls = {}           # Class ID storage per track
+    gt_paths = defaultdict(deque) # Trajectory history for Ground Truth objects
     
-    traj_rows = []
-    mse_values = []
+    traj_rows = []    # Accumulator for trajectory export
+    mse_values = []   # Accumulator for MSE metrics
     
     frame_idx = 0
     paused = PAUSE_ON_START
     did_seek = False
 
-    # --- Helper Functions ---
+    # --- Helper Functions (Inner Scope) ---
     def _clamp(i: int) -> int: 
+        """Clamps frame index within valid video range."""
         return max(0, min(total_frames - 1, i))
 
     def _reset_tracking_state():
+        """Resets tracker and visualization state (used when seeking/jumping frames)."""
         nonlocal tracker, track_paths, track_last_seen, track_cls
         tracker = tu.ByteTrackLike(iou_gate=tu.IOU_GATE, min_hits=tu.MIN_HITS)
         track_paths = {}
@@ -105,6 +130,7 @@ def main():
         track_cls = {}
 
     def _seek_to(target_idx: int):
+        """Seeks video and logic to a specific frame."""
         nonlocal frame_idx, did_seek
         frame_idx = _clamp(target_idx)
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -114,11 +140,14 @@ def main():
     if PAUSE_ON_START: 
         print("Paused. Press 'r' to resume, 'p' to pause again.")
 
-    # --- Main Loop ---
+    # --- Main Processing Loop ---
     while True:
+        # Sync video reader with logical frame index
         ret, frame = cap.read()
-        if not ret: break
+        if not ret: 
+            break
 
+        # Create copies for separate visualization windows
         vis_gt = frame.copy()
         vis_det = frame.copy()
 
@@ -128,16 +157,21 @@ def main():
         gt_centers = []
         if frame_idx in frames_gt:
             for ann in frames_gt[frame_idx]:
-                if SKIP_GT_OCCLUDED and (ann["lost"] == 1 or ann["occluded"] == 1): continue
+                # Filter out occluded/lost objects if configured
+                if SKIP_GT_OCCLUDED and (ann["lost"] == 1 or ann["occluded"] == 1): 
+                    continue
                 
+                # Scale bbox coordinates to current video resolution
                 bb = tu.scale_bbox(ann["bbox"], scale_x, scale_y)
                 cx, cy, _, _ = tu.xyxy_to_cxcywh(np.array(bb, np.float32))
                 gt_centers.append((cx, cy))
                 
+                # Update GT trajectory history
                 gt_paths[ann["id"]].append((int(cx), int(cy)))
                 if len(gt_paths[ann["id"]]) > tu.TRAJ_MAX_LEN: 
                     gt_paths[ann["id"]].popleft()
                 
+                # Draw GT box and trail
                 gt_cls_id = LABEL_TO_ID.get(ann["label"], 0)
                 color = CLASS_COLORS.get(gt_cls_id, (0, 255, 0))
                 
@@ -147,30 +181,35 @@ def main():
         # ---------------------------
         # 2. Tracking Logic
         # ---------------------------
+        # Get detections for current frame or empty array if none
         rows = dets_by_frame.get(frame_idx, np.empty((0, 7), np.float32))
+        
+        # Apply Non-Maximum Suppression (NMS) to clean up raw detections
         detections = tu.apply_nms(rows, tu.DET_CONF_THRES, tu.DET_IOU_NMS, tu.AGNOSTIC_NMS)
 
+        # Update Tracker (Kalman Filter + Hungarian Algorithm)
         tracks = tracker.update(detections, frame_idx, frame.shape)
 
         pred_centers = []
         
         for t in tracks:
-            # Skip ephemeral tracks unless predicting lost ones
+            # Skip noise/unconfirmed tracks unless we are predicting lost ones
             if t.hits < tu.MIN_HITS and t.time_since_update != 0:
                 continue
 
+            # Get current estimated state
             box = tu.get_track_box_current(t)
             cx, cy, w, h = (t.kf.x[:4, 0] if tu.HAS_FILTERPY else t.kf.state)
 
-            # Store data for HOTA
+            # Store prediction data for final HOTA evaluation
             if t.matched_this_frame:
                 pred_by_frame[frame_idx].append((int(t.id), box.astype(np.float32).copy()))
 
-            # Store data for MSE
+            # Store center for MSE calculation (active tracks only)
             if t.matched_this_frame and t.time_since_update == 0:
                 pred_centers.append((float(cx), float(cy)))
 
-            # --- Trajectory Storage (High-Conf Only) ---
+            # --- Trajectory Storage (High-Confidence Only) ---
             if t.high_conf_match:
                 if t.id not in track_paths:
                     track_paths[t.id] = deque(maxlen=tu.TRAJ_MAX_LEN)
@@ -178,10 +217,11 @@ def main():
                 track_last_seen[t.id] = frame_idx
                 track_cls[t.id] = t.cls
                 
+                # Append to export list
                 traj_rows.append(["video0", t.id, frame_idx, float(cx), float(cy), t.cls, CLASS_NAMES.get(t.cls, "Unknown")])
 
             # --- Visualization ---
-            # Determine drawing box (inflate if lost)
+            # Determine visualization box (inflate slightly if track is 'lost' to indicate uncertainty)
             if t.id in tracker.lost_ids and t.id in tracker.size_ref:
                 sw, sh = tracker.size_ref[t.id]
                 draw_box = tu.cxcywh_to_xyxy(np.array([cx, cy, sw * tu.LOST_SIZE_INFLATE, sh * tu.LOST_SIZE_INFLATE], np.float32))
@@ -190,18 +230,21 @@ def main():
             else:
                 draw_box = box
 
+            # Set color based on state (Lost vs Active)
             color = LOST_COLOR if (t.id in tracker.lost_ids) else CLASS_COLORS.get(t.cls, (200, 200, 200))
             tag = " LOST" if (t.id in tracker.lost_ids) else ""
             
+            # Draw Bounding Box and Label
             tu.draw_box_with_id(vis_det, draw_box, cls=t.cls, tid=t.id, conf=t.conf, color=color, label_map=CLASS_NAMES)
             
             if tag:
                 cv2.putText(vis_det, tag, (int(draw_box[0]), max(0, int(draw_box[1]) - 20)), tu.FONT, 0.5, color, 2, cv2.LINE_AA)
 
+            # Draw Trajectory Tail
             if t.id in track_paths:
                 tu.draw_trajectory(vis_det, list(track_paths[t.id]), color=color)
 
-            # Velocity Arrow
+            # Draw Velocity Arrow (Visualization of Kalman Filter velocity estimate)
             vx, vy = tracker._get_mean_velocity(t)
             speed = math.hypot(vx, vy)
             if speed > tu.MIN_SPEED:
@@ -214,7 +257,7 @@ def main():
                 cv2.putText(vis_det, f"v:{speed:.1f} {tu.SHOW_UNITS}  dir:{comp}",
                             (int(cx) + 5, int(cy) + 15), tu.FONT, 0.5, color, 2, cv2.LINE_AA)
 
-        # Cleanup stale UI tracks
+        # Cleanup stale UI tracks that haven't been seen in a while
         stale_ids = [tid for tid, last in list(track_last_seen.items())
                      if frame_idx - last > tu.MISS_FRAMES_TO_DROP_PATH]
         for tid in stale_ids:
@@ -222,18 +265,19 @@ def main():
             track_last_seen.pop(tid, None)
             track_cls.pop(tid, None)
 
-        # MSE Overlay
+        # Overlay MSE Metric
         if COMPUTE_MSE:
             frame_mse = tu.calculate_mse_per_frame(gt_centers, pred_centers)
             if frame_mse is not None:
                 mse_values.append(frame_mse)
+                # Draw text with outline for visibility
                 cv2.putText(vis_det, f"MSE: {frame_mse:.2f}", (10, 20), tu.FONT, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
                 cv2.putText(vis_det, f"MSE: {frame_mse:.2f}", (10, 20), tu.FONT, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
 
         # ----------------------------
         # 2.5. Display
         # ----------------------------
-        # Resize images to fit screen (height = 960px)
+        # Resize images to fit vertical screen space (target height = 960px)
         target_h = 960
         scale = target_h / float(vis_gt.shape[0])
         target_w = int(vis_gt.shape[1] * scale)
@@ -243,23 +287,23 @@ def main():
 
         cv2.imshow("GT (rescaled annotations + trajectories)", vis_gt_resized)
         cv2.imshow("Cached dets + ByteTrack + trajectories", vis_det_resized)
-        # # Display Windows
-        # cv2.imshow("GT (rescaled annotations + trajectories)", vis_gt)
-        # cv2.imshow("Cached dets + ByteTrack + trajectories", vis_det)
 
         # ---------------------------
         # 3. Controls
         # ---------------------------
+        # Wait logic: 0 = wait indefinitely (paused), 1 = wait 1ms (playing)
         key = cv2.waitKey(0 if paused else 1) & 0xFF
+        
         if key == ord('q'): break
         elif key == ord('p'): paused = not paused
         elif key == ord('r'): paused = False
         
         if paused:
-            if key == ord('o'): _seek_to(frame_idx + 1)
-            elif key == ord('i'): _seek_to(frame_idx - 1)
-            elif key == ord('l'): _seek_to(frame_idx + 100)
-            elif key == ord('k'): _seek_to(frame_idx - 100)
+            # Navigation keys for debugging
+            if key == ord('o'): _seek_to(frame_idx + 1)      # Next frame
+            elif key == ord('i'): _seek_to(frame_idx - 1)    # Prev frame
+            elif key == ord('l'): _seek_to(frame_idx + 100)  # Jump forward
+            elif key == ord('k'): _seek_to(frame_idx - 100)  # Jump back
             
         if not paused and not did_seek: 
             frame_idx += 1
@@ -272,13 +316,13 @@ def main():
     # EXPORT RESULTS
     # ==============================================================================
     
-    # Save Trajectories
+    # 1. Save Trajectories to CSV
     if traj_rows:
         df_traj = pd.DataFrame(traj_rows, columns=["video_id", "track_id", "frame", "x", "y", "class_id", "class_name"])
         df_traj.to_csv(TRAJ_CSV, index=False)
         print(f"Trajectories saved to {TRAJ_CSV}")
 
-    # Calculate and Save HOTA
+    # 2. Calculate and Save HOTA Metrics
     processed_frames = frame_idx + 1
     if gt_by_frame:
         df_hota, mean_DetA, mean_AssA, mean_HOTA = tu.eval_hota(
@@ -290,7 +334,7 @@ def main():
     else:
         print("HOTA skipped: no GT.")
 
-    # Report MSE
+    # 3. Report Average MSE
     if COMPUTE_MSE and len(mse_values) > 0:
         print(f"Overall MSE: {np.mean(mse_values):.3f}")
 

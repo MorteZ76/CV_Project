@@ -6,6 +6,8 @@ from typing import List, Dict
 # CONFIGURATION
 # =========================
 
+# Define source videos to process
+# 'id' corresponds to the specific scene identifier in utils.get_video_paths
 SOURCES: List[Dict[str, object]] = [
     {"name": "video0", "id": 0},
     {"name": "video3", "id": 3},
@@ -16,7 +18,8 @@ DATASET_ROOT: str = "dataset_yolo"
 IMAGES_DIR: str = os.path.join(DATASET_ROOT, "images")
 LABELS_DIR: str = os.path.join(DATASET_ROOT, "labels")
 
-FRAME_STEP: int = 1      # Save every k-th frame (1 = all frames)
+# Sampling parameters
+FRAME_STEP: int = 1      # Save every k-th frame (1 = all frames, 10 = decimate by 10)
 IMG_EXT: str = ".jpg"    # Output image format
 
 def run_dataset_preparation() -> None:
@@ -29,12 +32,16 @@ def run_dataset_preparation() -> None:
     """
     
     # --- Step 1: Extract Frames ---
+    # Decodes video files and saves frames to disk.
+    # Returns a mapping dict to link specific video frames to their saved file paths.
     print("Step 1: Extracting Frames...")
     mapping, video_info = utils.extract_dataset_frames(
         SOURCES, IMAGES_DIR, FRAME_STEP, IMG_EXT
     )
     
     # --- Step 2: Generate Labels ---
+    # specific YOLO format (class_id center_x center_y width height)
+    # Uses the mapping from Step 1 to ensure labels correspond exactly to saved images.
     print("\nStep 2: Generating YOLO Labels...")
     utils.generate_yolo_labels(mapping, video_info, LABELS_DIR)
     

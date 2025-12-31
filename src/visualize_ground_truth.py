@@ -10,40 +10,50 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
         video_num (int): The ID of the video to visualize (0 or 3).
         fps (int): Playback speed in frames per second.
     """
-    # Setup Paths & Load Data
+    # ---------------------------------------------------------
+    # Setup Paths & Data Loading
+    # ---------------------------------------------------------
     try:
+        # Retrieve system paths for video source and annotation CSV
         video_path, annotation_path = utils.get_video_paths(video_num)
     except ValueError as e:
         print(f"Error: {e}")
         return
 
+    # Initialize video capture
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Could not open video at {video_path}")
         return
 
+    # Load ground truth data into a DataFrame
     annotations = utils.load_annotations(annotation_path)
 
-    # Video Properties
+    # ---------------------------------------------------------
+    # Video Properties & Scaling
+    # ---------------------------------------------------------
+    # Extract metadata for resolution and length
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Calculate Dimensions and Scaling
+    # Calculate target dimensions and scaling factors to fit annotations to screen
     (new_w, new_h), (scale_x, scale_y) = utils.calculate_scaling(orig_w, orig_h, annotations)
     
     print(f"Original Resolution: {orig_w}x{orig_h}")
     print(f"Display Resolution:  {new_w}x{new_h}")
     print("Press 'q' to quit, 'p' to pause/play, 'j/k' to seek.")
 
-    # Initialize playback
+    # ---------------------------------------------------------
+    # Playback Loop
+    # ---------------------------------------------------------
     frame_number = 0
     paused = False
     window_name = 'Ground Truth Visualization'
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     
     while True:
-        # Sync video reader
+        # Ensure video buffer stays synced with logical frame counter (handle seeking)
         if frame_number != int(cap.get(cv2.CAP_PROP_POS_FRAMES)):
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
@@ -51,23 +61,28 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
         if not ret: 
             break
 
-        # Resize and Draw
+        # Resize frame for optimized display
         frame_resized = cv2.resize(frame, (new_w, new_h))
         
+        # Filter annotations for the current frame and overlay them
         if not annotations.empty:
             frame_anns = annotations[annotations['frame'] == frame_number]
             utils.draw_annotations_on_frame(frame_resized, frame_anns, scale_x, scale_y)
 
-        # Draw Overlays
+        # Draw UI components (Legends and Timestamps)
         utils.draw_legends(frame_resized)
         utils.draw_timestamp(frame_resized, frame_number, fps)
         
         cv2.imshow(window_name, frame_resized)
 
-        # Handle Playback Control
+        # ---------------------------------------------------------
+        # Input Handling
+        # ---------------------------------------------------------
+        # Calculate delay based on pause state (0 = wait indefinitely) or FPS
         delay = 0 if paused else int(1000 / fps)
         key = cv2.waitKey(delay) & 0xFF
 
+        # Delegate control logic (pause, seek, quit) to utility function
         frame_number, paused, should_quit = utils.handle_playback_controls(
             key, frame_number, total_frames, paused, fps
         )
@@ -75,6 +90,7 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
         if should_quit:
             break
 
+    # Cleanup resources
     cap.release()
     cv2.destroyAllWindows()
 

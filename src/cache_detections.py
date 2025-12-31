@@ -14,7 +14,8 @@ import utils
 VIDEO_IDS = [0, 3]
 
 # Model Weights
-# Ensure these paths are correct relative to where you run the script
+# Dictionary mapping model versions to their respective checkpoint paths.
+# Ensure these paths are correct relative to where you run the script.
 YOLO_MODELS = {
     "new_model": os.path.join("models", "sdd_yolov8s", "weights", "best.pt"),
     "old_model": os.path.join("old_model", "models", "sdd_yolov8s_resume", "weights", "best.pt")
@@ -24,13 +25,14 @@ YOLO_MODELS = {
 OUTPUT_DIR = os.path.join("outputs", "detections_cache")
 
 # Inference Hyperparameters
-CONF_THRESHOLD = 0.25     # Minimum confidence score
-MAX_DETECTIONS = 3000     # Maximum detections per frame
-FRAME_STEP = 1            # Process every Nth frame
-IOU_THRESHOLD = 1.0       # IoU threshold (1.0 disables NMS filtering)
-AGNOSTIC_NMS = True       # Class-agnostic NMS
+CONF_THRESHOLD = 0.25     # Minimum confidence score to retain detections
+MAX_DETECTIONS = 3000     # Maximum number of detections allowed per frame
+FRAME_STEP = 1            # Inference stride (1 = process every frame)
+IOU_THRESHOLD = 1.0       # IoU threshold for NMS (1.0 effectively disables built-in NMS if needed)
+AGNOSTIC_NMS = True       # Apply NMS across all classes (prevent overlapping boxes of different classes)
 
 # Automatic Device Selection
+# Prioritizes CUDA-enabled GPU if available, falling back to CPU
 DEVICE = 0 if torch.cuda.is_available() else "cpu"
 
 # ==========================================
@@ -40,6 +42,14 @@ DEVICE = 0 if torch.cuda.is_available() else "cpu"
 def cache_video_detections(video_path: str, model_path: str, output_parquet: str) -> None:
     """
     Runs YOLOv8 inference on a video and saves detections to a Parquet file.
+    
+    This function processes the video frame-by-frame, extracts bounding boxes,
+    confidence scores, and class IDs, and serializes the data for downstream tasks.
+
+    Args:
+        video_path (str): Path to the source video file.
+        model_path (str): Path to the YOLOv8 model weights (.pt file).
+        output_parquet (str): Destination path for the output Parquet file.
     """
     utils.ensure_dir(os.path.dirname(output_parquet))
     
@@ -73,10 +83,13 @@ def cache_video_detections(video_path: str, model_path: str, output_parquet: str
         if not ret:
             break
         
+        # Skip frames based on configured step size
         if frame_idx % FRAME_STEP != 0:
             continue
 
         # Run Prediction
+        # Note: 'stream=True' is generally recommended for long videos to manage memory, 
+        # but standard prediction is used here for simplicity with small batches.
         results = model.predict(
             source=frame,
             conf=CONF_THRESHOLD,
@@ -87,7 +100,7 @@ def cache_video_detections(video_path: str, model_path: str, output_parquet: str
             device=DEVICE  # Dynamically set to 'cpu' or 0
         )[0]
 
-        # Extract Boxes
+        # Extract Boxes and Metadata
         if results.boxes is not None:
             boxes = results.boxes.xyxy.cpu().numpy()
             confs = results.boxes.conf.cpu().numpy()
@@ -111,10 +124,12 @@ def cache_video_detections(video_path: str, model_path: str, output_parquet: str
         print(f"[Warning] No detections found for {os.path.basename(video_path)}.")
         return
 
+    # Convert to DataFrame and optimize columns
     df = pd.DataFrame(detection_data)
     cols = ["frame", "x1", "y1", "x2", "y2", "score", "cls"]
     df = df[cols]
     
+    # Save to Parquet for efficient storage and fast I/O
     df.to_parquet(output_parquet, index=False)
     print(f"[Success] Saved {len(df)} detections to: {output_parquet}")
 
@@ -124,7 +139,8 @@ def cache_video_detections(video_path: str, model_path: str, output_parquet: str
 
 def run_caching():
     """
-    Iterates through all defined videos and models, caching detection results.
+    Orchestrates the batch processing of video inference across multiple models.
+    Iterates through all defined videos and model versions, caching results to disk.
     """
     for video_id in VIDEO_IDS:
         # Retrieve video path dynamically using utils

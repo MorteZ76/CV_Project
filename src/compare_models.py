@@ -31,22 +31,23 @@ IMAGES_PATH = BASE_DIR / "dataset_yolo" / "images"
 LABELS_PATH = BASE_DIR / "dataset_yolo" / "labels"
 
 # Model Weights Paths
+# Defines the specific model checkpoints to compare
 MODELS = {
     "old_model": str(BASE_DIR / "old_model" / "models" / "sdd_yolov8s" / "weights" / "best.pt"),
     "new_model": str(BASE_DIR / "models" / "sdd_yolov8s" / "weights" / "best.pt")
 }
 
 # Evaluation Hyperparameters
-IOU_THRESHOLD = 0.50      # IoU threshold for True Positive matching
-CONF_THRESHOLD = 0.70     # Confidence threshold for valid detections
-IMGSZ = 960               # Inference image size
-MAX_FRAMES = 300          # Maximum number of frames to analyze
-FRAME_STEP = 50           # Subsampling interval (process every Nth frame)
+IOU_THRESHOLD = 0.50      # Minimum overlap required to consider a detection a True Positive
+CONF_THRESHOLD = 0.70     # Confidence threshold for filtering weak detections
+IMGSZ = 960               # Input resolution size for model inference
+MAX_FRAMES = 300          # Limit total frames to process for faster iteration
+FRAME_STEP = 50           # Process every Nth frame (subsampling)
 
 # Visualization Settings
-DISPLAY_SCALE = 0.8       # Scale factor for the visualization window (0.8 = 80% size)
-TEXT_FONT_SCALE = 0.6     # Font size for class labels
-TEXT_THICKNESS = 2        # Thickness for class labels
+DISPLAY_SCALE = 0.8       # Resize factor for the GUI window (0.8 = 80% of original size)
+TEXT_FONT_SCALE = 0.6     # Font size for bounding box labels
+TEXT_THICKNESS = 2        # Thickness for text drawing
 # ==============================================================================
 
 
@@ -72,10 +73,10 @@ def load_gt_yolo(label_file, img_w, img_h):
             if len(parts) != 5:
                 continue
             
-            # YOLO format: class x_center y_center width height (normalized)
+            # YOLO format: class x_center y_center width height (normalized 0-1)
             cls, xc, yc, w, h = map(float, parts)
             
-            # Convert to pixel coordinates (x1, y1, x2, y2)
+            # Convert normalized center-coordinates to absolute corner-coordinates (x1, y1, x2, y2)
             x1 = (xc - w / 2) * img_w
             y1 = (yc - h / 2) * img_h
             x2 = (xc + w / 2) * img_w
@@ -98,14 +99,14 @@ def draw_boxes(img, boxes, class_names, color=(0, 255, 0)):
     for b in boxes:
         x1, y1, x2, y2, cls = map(int, b[:5])
         
-        # Resolve class name from ID
+        # Resolve class name from ID, fallback to ID if missing
         cls_name = class_names[cls] if cls in class_names else str(cls)
         
         # 1. Draw Bounding Box
         cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
         
         # 2. Draw Text (Color matches box)
-        # Ensure text doesn't go off the top edge
+        # Ensure text doesn't go off the top edge of the image
         y_text = max(y1 - 5, 15)
         cv2.putText(img, cls_name, (x1, y_text), 
                     cv2.FONT_HERSHEY_SIMPLEX, TEXT_FONT_SCALE, color, TEXT_THICKNESS)
@@ -123,9 +124,10 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
     image_files = all_images[::frame_step][:max_frames]
 
     # 2. Load Models & Extract Class Names
+    # Assuming both models share the same class mapping (names)
     print(f"Loading models...")
     loaded_models = {name: YOLO(path) for name, path in models_dict.items()}
-    class_names = list(loaded_models.values())[0].names  # Assume shared class map
+    class_names = list(loaded_models.values())[0].names 
 
     # 3. Initialize Metric Accumulators
     metrics_data = {
@@ -146,6 +148,7 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
     while i < len(image_files):
         img_name = image_files[i]
         img_path = os.path.join(images_dir, img_name)
+        # Infer corresponding label file path
         label_path = os.path.join(labels_dir, os.path.splitext(img_name)[0] + ".txt")
         
         # Load Image
@@ -155,13 +158,14 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
             continue
         h, w = img.shape[:2]
 
-        # Load Ground Truth
+        # Load Ground Truth boxes for this frame
         gt_boxes = load_gt_yolo(label_path, w, h)
 
         # Run Inference & Process Detections
         dets_per_model = {}
         
         for name, model in loaded_models.items():
+            # Run YOLO inference
             results = model.predict(img, imgsz=imgsz, conf=conf_thres, verbose=False)[0]
             det_boxes = []
             
@@ -177,7 +181,7 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
             dets_per_model[name] = det_boxes
 
             # --- Calculate Frame-Level Metrics ---
-            # Convert to tensors for IoU calculation
+            # Prepare tensors for vectorized IoU calculation
             gt_t = torch.tensor(gt_boxes[:, :4]) if len(gt_boxes) > 0 else torch.empty((0,4))
             det_t = torch.tensor([b[:4] for b in det_boxes]) if len(det_boxes) > 0 else torch.empty((0,4))
 
@@ -189,26 +193,27 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
                 metrics_data[name]["fn"] += len(gt_boxes)
                 continue
 
-            # Compute IoU Matrix
+            # Compute IoU Matrix between all Dets and all GTs
             ious = box_iou(det_t, gt_t).numpy()
             
-            # Greedy Matching
+            # Greedy Matching: Match detections to GTs based on highest IoU
             matched_gt = set()
             for k, det_box in enumerate(det_boxes):
                 det_cls = int(det_box[4])
                 det_iou = ious[k]
                 
-                # Filter GTs by same class
+                # Filter GTs to only consider those with the same class
                 same_cls_idxs = [j for j, gt in enumerate(gt_boxes) if int(gt[4]) == det_cls]
                 
                 if not same_cls_idxs:
                     metrics_data[name]["fp"] += 1
                     continue
                 
-                # Find best matching GT
+                # Find best matching GT among those with the same class
                 same_cls_ious = [(j, det_iou[j]) for j in same_cls_idxs]
                 best_match_idx, max_iou = max(same_cls_ious, key=lambda x:x[1])
                 
+                # Check overlap threshold and ensure GT hasn't been matched yet (1-to-1 matching)
                 if max_iou >= iou_thres and best_match_idx not in matched_gt:
                     metrics_data[name]["tp"] += 1
                     matched_gt.add(best_match_idx)
@@ -230,14 +235,14 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
         draw_boxes(img_old, dets_per_model["old_model"], class_names, color=(0, 0, 255))
         draw_boxes(img_new, dets_per_model["new_model"], class_names, color=(255, 0, 0))
 
-        # Add Titles
+        # Add Titles for clarity
         title_font_scale = 1.2
         title_thickness = 3
         cv2.putText(img_gt, "Ground Truth", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, title_font_scale, (0, 255, 0), title_thickness)
         cv2.putText(img_old, "Old Model", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, title_font_scale, (0, 0, 255), title_thickness)
         cv2.putText(img_new, "New Model", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, title_font_scale, (255, 0, 0), title_thickness)
 
-        # Resize and Concatenate
+        # Resize for display and Concatenate horizontally
         h_disp, w_disp = int(h * DISPLAY_SCALE), int(w * DISPLAY_SCALE)
         combined_view = np.hstack((
             cv2.resize(img_gt, (w_disp, h_disp)),
@@ -284,6 +289,7 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
     for name in models_dict:
         tp, fp, fn = metrics_data[name]["tp"], metrics_data[name]["fp"], metrics_data[name]["fn"]
         
+        # Avoid division by zero with epsilon
         precision = tp / (tp + fp + 1e-9)
         recall = tp / (tp + fn + 1e-9)
         f1 = 2 * precision * recall / (precision + recall + 1e-9)
@@ -291,6 +297,7 @@ def evaluate_and_visualize(models_dict, images_dir, labels_dir,
         
         final_metrics[name] = {"precision": precision, "recall": recall, "f1": f1, "accuracy": accuracy}
 
+    # Print comparative table
     for key in ["precision", "recall", "f1", "accuracy"]:
         print(f"{key.capitalize():<12} {final_metrics['old_model'][key]:>12.4f} {final_metrics['new_model'][key]:>12.4f}")
     

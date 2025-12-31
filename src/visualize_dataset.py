@@ -7,9 +7,12 @@ from typing import Optional
 # CONFIGURATION
 # =========================
 
+# Define filesystem paths for the YOLO dataset
 DATASET_ROOT: str = "dataset_yolo"
 IMAGES_DIR: str = os.path.join(DATASET_ROOT, "images")
 LABELS_DIR: str = os.path.join(DATASET_ROOT, "labels")
+
+# Playback speed (frames per second) when in auto-play mode
 FPS: int = 32
 
 def get_processed_frame(img_path: str, label_path: str, idx: int, total: int, img_name: str) -> Optional[cv2.Mat]:
@@ -32,6 +35,7 @@ def get_processed_frame(img_path: str, label_path: str, idx: int, total: int, im
         return None
 
     # 2. Resize Image
+    # Scale images to a consistent height for better viewing experience
     orig_h, orig_w = img.shape[:2]
     factor = utils.TARGET_DISPLAY_HEIGHT / orig_h
     new_w = int(orig_w * factor)
@@ -39,11 +43,13 @@ def get_processed_frame(img_path: str, label_path: str, idx: int, total: int, im
     img_resized = cv2.resize(img, (new_w, new_h))
 
     # 3. Draw Elements using Utils
+    # Overlay bounding boxes, class names, and UI legends
     utils.draw_yolo_labels(img_resized, label_path)
     utils.draw_class_legend(img_resized)
     utils.draw_controls_legend(img_resized)
     
     # 4. Draw Info Overlay
+    # Display current progress and filename
     info_text = f"Image: {idx + 1}/{total} | {img_name}"
     utils.draw_text_with_background(img_resized, info_text, y_pos=30)
 
@@ -52,12 +58,14 @@ def get_processed_frame(img_path: str, label_path: str, idx: int, total: int, im
 def run_dataset_visualization() -> None:
     """
     Runs the interactive viewer for the generated YOLO dataset.
+    Allows navigating through images as a sequence or utilizing playback controls.
     """
+    # Validate directory structure
     if not os.path.exists(IMAGES_DIR):
         print(f"[Error] Dataset directory not found: {IMAGES_DIR}")
         return
 
-    # Filter for valid image files only
+    # Filter for valid image files only and sort them for consistent order
     image_files = sorted([f for f in os.listdir(IMAGES_DIR) if f.lower().endswith((".jpg", ".png"))])
     if not image_files:
         print("[Error] No images found.")
@@ -76,11 +84,13 @@ def run_dataset_visualization() -> None:
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
     while True:
-        # Optimization: Only process frame if index changed
+        # Optimization: Only re-process the frame if the index has changed
+        # This prevents unnecessary CPU usage when the viewer is paused
         if idx != last_idx:
             img_name = image_files[idx]
             img_path = os.path.join(IMAGES_DIR, img_name)
-            # Infer label path from image name
+            
+            # Infer label path from image name (assuming same filename with .txt extension)
             label_path = os.path.join(LABELS_DIR, os.path.splitext(img_name)[0] + ".txt")
 
             processed = get_processed_frame(img_path, label_path, idx, total, img_name)
@@ -89,7 +99,7 @@ def run_dataset_visualization() -> None:
                 display_frame = processed
                 last_idx = idx
             else:
-                # Skip corrupt images automatically
+                # Skip corrupt or unreadable images automatically
                 idx = (idx + 1) % total
                 continue
 
@@ -97,6 +107,7 @@ def run_dataset_visualization() -> None:
             cv2.imshow(window_name, display_frame)
 
         # Handle Playback Control
+        # Calculate delay: 0 allows waiting indefinitely (paused), otherwise wait for frame duration
         delay = 0 if paused else int(1000 / FPS)
         key = cv2.waitKey(delay) & 0xFF
         

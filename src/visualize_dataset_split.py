@@ -9,8 +9,10 @@ from typing import List
 # CONFIGURATION
 # =========================
 
+# Path to the YOLO dataset configuration file
 DATA_YAML_PATH = os.path.join("dataset_yolo", "data.yaml")
 
+# Dataset split to visualize (e.g., 'train', 'val', 'test')
 SPLIT = "train"
 SHUFFLE = False
 LIMIT = None
@@ -34,6 +36,7 @@ def load_image_list(yaml_path: str, split_name: str) -> List[str]:
     if not os.path.exists(yaml_path):
         return []
 
+    # Parse the YAML configuration to find the text file listing image paths
     with open(yaml_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
@@ -48,6 +51,7 @@ def load_image_list(yaml_path: str, split_name: str) -> List[str]:
     if not os.path.exists(txt_path):
         return []
 
+    # Read all non-empty lines from the split text file
     with open(txt_path, "r", encoding="utf-8") as f:
         paths = [line.strip() for line in f if line.strip()]
         
@@ -57,12 +61,21 @@ def infer_label_path(img_path: str) -> str:
     """
     Derives the expected label file path from the image file path.
     Assumes standard YOLO directory structure (images/ -> labels/).
+    
+    Args:
+        img_path (str): The full path to the image file.
+        
+    Returns:
+        str: The corresponding path to the .txt label file.
     """
+    # Normalize path separators
     path = img_path.replace("\\", "/")
     
+    # Swap directory convention from 'images' to 'labels'
     if "/images/" in path:
         path = path.replace("/images/", "/labels/")
     
+    # Swap extension to .txt
     base, _ = os.path.splitext(path)
     return base + ".txt"
 
@@ -82,12 +95,14 @@ def run_viewer():
     Iterates through the dataset split and displays images with overlayed ground truth labels.
     Uses consistent scaling and controls from utils.py.
     """
+    # Load dataset index based on configuration
     images = load_image_list(DATA_YAML_PATH, SPLIT)
     
     if not images:
         print(f"No images found for split: {SPLIT}")
         return
 
+    # Apply processing limits or shuffling
     if SHUFFLE:
         random.shuffle(images)
     
@@ -99,6 +114,7 @@ def run_viewer():
     idx = 0
     total = len(images)
 
+    # Navigation Loop
     while 0 <= idx < total:
         img_path = images[idx]
         
@@ -113,19 +129,21 @@ def run_viewer():
             continue
 
         # Resize to match target display height (consistent with visualize_dataset.py)
+        # This ensures the window fits comfortably on standard screens
         orig_h, orig_w = frame.shape[:2]
         factor = utils.TARGET_DISPLAY_HEIGHT / orig_h
         new_w = int(orig_w * factor)
         new_h = int(orig_h * factor)
         frame_resized = cv2.resize(frame, (new_w, new_h))
 
+        # Retrieve annotation data
         label_path = infer_label_path(img_path)
         box_count = count_labels_in_file(label_path)
         
-        # Render visualization
+        # Render visualization (bounding boxes)
         utils.draw_yolo_labels(frame_resized, label_path)
 
-        # Overlay metadata
+        # Overlay metadata (Split info, progress, file name)
         info_text = f"{SPLIT.upper()} [{idx+1}/{total}] | Boxes: {box_count} | {os.path.basename(img_path)}"
         utils.draw_text_with_background(frame_resized, info_text, y_pos=30)
         
@@ -135,14 +153,14 @@ def run_viewer():
 
         cv2.imshow(WINDOW_NAME, frame_resized)
 
-        # Input handling
+        # Input handling: Wait indefinitely for a key press
         key = cv2.waitKey(0) & 0xFF
         
         if key == ord('q'):
             break
-        elif key == ord('j'): # Previous
+        elif key == ord('j'): # Previous Image
             idx = max(0, idx - 1)
-        elif key == ord('k'): # Next
+        elif key == ord('k'): # Next Image
             idx += 1
         else:
             # Default to next on other keys (optional, matches standard viewers)
