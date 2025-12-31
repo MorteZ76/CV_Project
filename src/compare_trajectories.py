@@ -28,7 +28,7 @@ except ImportError:
 # CONFIGURATION
 # ==============================================================================
 
-# Select Video to Compare (0 or 1 usually)
+# Select Video to Compare (0 or 3)
 VIDEO_NUM = 0
 
 # --- Visual Settings ---

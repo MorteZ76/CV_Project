@@ -8,7 +8,7 @@ from typing import List, Dict
 
 SOURCES: List[Dict[str, object]] = [
     {"name": "video0", "id": 0},
-    {"name": "video3", "id": 1},
+    {"name": "video3", "id": 3},
 ]
 
 # Output Configuration

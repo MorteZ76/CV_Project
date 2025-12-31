@@ -7,7 +7,7 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
     Runs the ground truth visualization for a specific video.
 
     Args:
-        video_num (int): The ID of the video to visualize (0 or 1).
+        video_num (int): The ID of the video to visualize (0 or 3).
         fps (int): Playback speed in frames per second.
     """
     # Setup Paths & Load Data
@@ -81,7 +81,7 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
 if __name__ == "__main__":
     # Allows running via command line: python visualize_ground_truth.py --video 0 --fps 60
     parser = argparse.ArgumentParser(description="Visualize Ground Truth Annotations.")
-    parser.add_argument("--video", type=int, default=1, choices=[0, 1], help="Video ID (0 or 1)")
+    parser.add_argument("--video", type=int, default=1, choices=[0, 3], help="Video ID (0 or 3)")
     parser.add_argument("--fps", type=int, default=32, help="Playback FPS")
     
     args = parser.parse_args()

@@ -10,8 +10,8 @@ import utils
 # CONFIGURATION
 # ==========================================
 
-# Video Identifiers to process (0 for video0, 1 for video3)
-VIDEO_IDS = [0, 1]
+# Video Identifiers to process (0 for video0, 3 for video3)
+VIDEO_IDS = [0, 3]
 
 # Model Weights
 # Ensure these paths are correct relative to where you run the script

@@ -44,7 +44,7 @@ def get_video_paths(video_num: int, base_dir: str = "data") -> Tuple[str, str]:
     Retrieves the video and annotation file paths for a specific dataset scene.
 
     Args:
-        video_num (int): Identifier for the video (0 for 'video0', 1 for 'video3').
+        video_num (int): Identifier for the video (0 for 'video0', 3 for 'video3').
         base_dir (str): Root directory containing the dataset videos.
 
     Returns:
@@ -55,10 +55,10 @@ def get_video_paths(video_num: int, base_dir: str = "data") -> Tuple[str, str]:
     """
     if video_num == 0:
         video_dir = os.path.join(base_dir, "video0")
-    elif video_num == 1:
+    elif video_num == 3:
         video_dir = os.path.join(base_dir, "video3")
     else:
-        raise ValueError("Video number must be 0 (video0) or 1 (video3)")
+        raise ValueError("Video number must be 0 (video0) or 3 (video3)")
     
     return os.path.join(video_dir, "video.mp4"), os.path.join(video_dir, "annotations.txt")
 

@@ -21,7 +21,7 @@ import tracker_utils as tu  # Tracker specific utils
 # ==============================================================================
 
 # --- Paths ---
-video_num = 0  # 0 or 1 to switch videos
+video_num = 0  # 0 or 3 to switch videos
 VIDEO_PATH, ANNOT_PATH = utils.get_video_paths(video_num)
 
 # Resolve Base Directory (Go back one level from src if script is in src/)
