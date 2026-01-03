@@ -97,7 +97,7 @@ def run_visualization(video_num: int, fps: int = 30) -> None:
 if __name__ == "__main__":
     # Allows running via command line: python visualize_ground_truth.py --video 0 --fps 60
     parser = argparse.ArgumentParser(description="Visualize Ground Truth Annotations.")
-    parser.add_argument("--video", type=int, default=1, choices=[0, 3], help="Video ID (0 or 3)")
+    parser.add_argument("--video", type=int, default=3, choices=[0, 3], help="Video ID (0 or 3)")
     parser.add_argument("--fps", type=int, default=32, help="Playback FPS")
     
     args = parser.parse_args()
