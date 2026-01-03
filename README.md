@@ -5,11 +5,10 @@ Below are the opening pages of the detailed technical report for this project.
 **[📥 Click here to download the full PDF report](docs/Computer_Vision_Report.pdf)**
 
 <p align="center">
-  <img src="docs/report_page0.jpg" width="45%" />
-  <img src="docs/report_page1.jpg" width="45%" />
+  <img src="docs/report_page0.jpg" width="90%" />
 </p>
 <p align="center">
-  <img src="docs/report_page2.jpg" width="90%" />
+  <img src="docs/report_page1.jpg" width="90%" />
 </p>
 
 ## 📌 Project Overview
