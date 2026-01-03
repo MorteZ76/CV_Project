@@ -127,8 +127,8 @@ Standalone scripts for visual verification.
 
 ```bash
 # Clone the repository
-git clone [https://github.com/yourusername/your-repo.git](https://github.com/yourusername/your-repo.git)
+git clone [https://github.com/MorteZ76/CV_Project](https://github.com/MorteZ76/CV_Project)
 cd your-repo
 
 # Install dependencies
-pip install ultralytics opencv-python pandas numpy filterpy pyarrow
+pip install -r requirements.txt
