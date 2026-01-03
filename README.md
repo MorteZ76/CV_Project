@@ -128,7 +128,7 @@ Standalone scripts for visual verification.
 ```bash
 # Clone the repository
 git clone [https://github.com/MorteZ76/CV_Project](https://github.com/MorteZ76/CV_Project)
-cd your-repo
+cd CV_Project
 
 # Install dependencies
 pip install -r requirements.txt
