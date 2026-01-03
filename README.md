@@ -1,5 +1,17 @@
 # UAV Object Tracking & Trajectory Analysis Pipeline
 
+## 📄 Report Preview
+Below are the opening pages of the detailed technical report for this project.
+**[📥 Click here to download the full PDF report](docs/Computer_Vision_Report.pdf)**
+
+<p align="center">
+  <img src="docs/0.png" width="45%" />
+  <img src="docs/1.png" width="45%" />
+</p>
+<p align="center">
+  <img src="docs/2.png" width="90%" />
+</p>
+
 ## 📌 Project Overview
 This project is a computer vision pipeline focused on **Object Tracking**, **Trajectory Analysis**, and **YOLO Model Training** on the Stanford Drone Dataset (SDD). It includes modules for dataset preparation, model training (YOLOv8), custom tracking logic (ByteTrack-based), performance evaluation (HOTA/MSE), and movement pattern analysis (Origin-Destination).
 
